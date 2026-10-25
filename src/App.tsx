@@ -42,6 +42,8 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
   const [dbStatus, setDbStatus] = useState("Belum login");
+  const [customersLoaded, setCustomersLoaded] = useState(false);
+  const [billsLoaded, setBillsLoaded] = useState(false);
   const [dbError, setDbError] = useState("");
   const [saving, setSaving] = useState(false);
   const [activeMenu, setActiveMenu] = useState("dashboard");
@@ -90,16 +92,17 @@ export default function App() {
     if (!isAdmin || !db || !auth?.currentUser) return;
     setDbStatus("Terhubung"); setDbError("");
     const stopCustomers = onSnapshot(collection(db, "customers"), snapshot => {
-      setCustomers(snapshot.docs.map(item => ({ ...item.data(), legacyNo: Number(item.data().legacyNo ?? item.id) } as Customer)).sort((a,b)=>a.legacyNo-b.legacyNo));
+      setCustomers(snapshot.docs.map(item => ({ ...item.data(), legacyNo: Number(item.data().legacyNo ?? item.id) } as Customer)).sort((a,b)=>a.legacyNo-b.legacyNo)); setCustomersLoaded(true);
     }, error => { setDbStatus("Gagal"); setDbError(error.message); });
     const stopBills = onSnapshot(collection(db, "bills"), snapshot => {
-      setBills(snapshot.docs.map(item => ({ ...item.data(), id: item.id } as Bill)).sort((a,b)=>(b.year||0)-(a.year||0) || a.legacyNo-b.legacyNo));
+      setBills(snapshot.docs.map(item => ({ ...item.data(), id: item.id } as Bill)).sort((a,b)=>(b.year||0)-(a.year||0) || a.legacyNo-b.legacyNo)); setBillsLoaded(true);
     }, error => { setDbStatus("Gagal"); setDbError(error.message); });
     return () => { stopCustomers(); stopBills(); };
   }, [isAdmin]);
 
   async function seedDemoData() {
     if (!db) { setDbError("Firestore belum dikonfigurasi."); return; }
+    if (!customersLoaded || !billsLoaded) { setDbError("Tunggu sampai Firestore selesai memuat data."); return; }
     if (customers.length || bills.length) { setDbError("Data demo hanya bisa dimuat saat database masih kosong."); return; }
     const demoBills: Bill[] = [
       {id:"demo-1",legacyNo:1,customerName:"Riski",billingMonth:"Januari",year:2026,amount:100000,status:"paid",paidAt:"2026-01-10",paymentNote:"Data demo"},
@@ -159,7 +162,7 @@ export default function App() {
     <section className="admin-main">
       <header className="admin-topbar"><div><span className="admin-breadcrumb">IndimediaWifi /</span><b>{({dashboard:"Dashboard",customers:"Data Pelanggan",billing:"Tagihan Bulanan",backup:"Backup & Restore",settings:"Pengaturan"} as Record<string,string>)[activeMenu]}</b></div><button className="admin-top-action" onClick={logout}><LogOut size={15}/> Keluar</button></header>
       {activeMenu === "dashboard" && <div className="admin-content">
-        <div className="admin-page-heading"><div><span className="section-kicker">ADMIN CONTROL CENTER</span><h1>Dashboard</h1><p>Ringkasan administrasi pelanggan dan tagihan IndimediaWifi.</p></div>{customers.length===0&&bills.length===0&&<button className="excel-button" onClick={()=>void seedDemoData()}>Isi data demo ke Firestore</button>}<button className="excel-button" onClick={() => { setActiveMenu("backup"); setBackupNotice(""); }}><HardDriveUpload size={16}/> Kelola Backup</button></div>
+        <div className="admin-page-heading"><div><span className="section-kicker">ADMIN CONTROL CENTER</span><h1>Dashboard</h1><p>Ringkasan administrasi pelanggan dan tagihan IndimediaWifi.</p></div>{customersLoaded&&billsLoaded&&customers.length===0&&bills.length===0&&<button className="excel-button" onClick={()=>void seedDemoData()}>Isi data demo ke Firestore</button>}<button className="excel-button" onClick={() => { setActiveMenu("backup"); setBackupNotice(""); }}><HardDriveUpload size={16}/> Kelola Backup</button></div>
         <div className="admin-stat-grid"><div className="admin-stat"><span><Users size={17}/> Total Pelanggan</span><strong>{customers.length}</strong><small>Data yang tampil di panel ini</small></div><div className="admin-stat"><span><ReceiptText size={17}/> Catatan Tagihan</span><strong>{bills.length}</strong><small>Data tagihan pada sesi ini</small></div><div className="admin-stat"><span><CheckCircle2 size={17}/> Status Lunas</span><strong>{paidCount}</strong><small>Dari data backup yang dimuat</small></div><div className="admin-stat"><span><Activity size={17}/> Database</span><strong className={dbStatus==="Terhubung"?"":"pending-text"}>{dbStatus}</strong><small>{dbError || "Sinkronisasi Firestore live"}</small></div></div>
         <section className="excel-panel server-check-panel"><div className="excel-panel-heading"><div><RadioTower size={19}/><span><b>Pemeriksaan Server / MikroTik</b><small>Status monitoring jaringan</small></span></div><span className="sheet-status off">Belum terhubung</span></div><p className="admin-hint">Router MikroTik belum dipantau dari aplikasi. Status server akan ditampilkan setelah backend monitoring dikonfigurasi; indikator ini bukan status live.</p><div className="server-check-grid"><div><span>Router</span><b>Belum dikonfigurasi</b></div><div><span>Koneksi pelanggan</span><b>Belum tersedia</b></div><div><span>Pemeriksaan terakhir</span><b>—</b></div></div></section>
         <section className="excel-panel"><div className="excel-panel-heading"><div><FileSpreadsheet size={19}/><span><b>Ringkasan Data Pelanggan</b><small>Pratinjau gaya lembar kerja Excel</small></span></div><button className="excel-button" onClick={() => downloadExcel({ sourceFile: "IndimediaWifi", sourceSheet: "Data Pelanggan", year: 2026, customers, bills })}><ArrowDownToLine size={15}/> Download Backup</button></div>
