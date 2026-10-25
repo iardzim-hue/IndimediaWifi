@@ -85,13 +85,18 @@ export default function App() {
 
   const filteredCustomers = customers.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || String(c.legacyNo).includes(search));
   const paidCount = bills.filter(b => b.status === "paid").length;
-  const monthLabels = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
 
   if (isAdmin) return <main className="admin-shell">
     <aside className="admin-sidebar">
       <Brand />
       <div className="admin-side-label">MENU UTAMA</div>
-      {[["dashboard", "Dashboard", LayoutDashboard], ["customers", "Data Pelanggan", Users], ["billing", "Tagihan Bulanan", ReceiptText], ["backup", "Backup & Restore", HardDriveUpload], ["settings", "Pengaturan", Settings2]].map(([key, label, Icon]) => <button key={String(key)} className={activeMenu === key ? "admin-nav active" : "admin-nav"} onClick={() => { setActiveMenu(String(key)); setBackupNotice(""); }}><Icon size={17} />{String(label)}</button>)}
+      {([
+        { key: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
+        { key: "customers", label: "Data Pelanggan", Icon: Users },
+        { key: "billing", label: "Tagihan Bulanan", Icon: ReceiptText },
+        { key: "backup", label: "Backup & Restore", Icon: HardDriveUpload },
+        { key: "settings", label: "Pengaturan", Icon: Settings2 },
+      ]).map(({ key, label, Icon }) => <button key={key} className={activeMenu === key ? "admin-nav active" : "admin-nav"} onClick={() => { setActiveMenu(key); setBackupNotice(""); }}><Icon size={17} />{label}</button>)}
       <div className="admin-side-bottom"><span className="admin-avatar">IA</span><span><b>iamardi</b><small>Administrator demo</small></span><button aria-label="Keluar" onClick={logout}><LogOut size={16}/></button></div>
     </aside>
     <section className="admin-main">
