@@ -114,6 +114,48 @@ export default function App() {
     return () => { stopCustomers(); stopBills(); };
   }, [isAdmin]);
 
+  useEffect(() => {
+    let active = true;
+    const checkServer = async () => {
+      try {
+        const response = await fetch("/.netlify/functions/customer-portal?action=status");
+        const result = await response.json();
+        if (active && response.ok) {
+          setServerStatus(result as ServerStatus);
+          setServerTarget(String(result.target || ""));
+        }
+      } catch {
+        if (active) setServerStatus({status:"unknown",label:"Monitoring tidak tersedia"});
+      }
+    };
+    void checkServer();
+    const timer = window.setInterval(checkServer, 60000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+
+  async function saveServerTarget() {
+    if (!auth?.currentUser) { setDbError("Sesi admin Firebase tidak ditemukan."); return; }
+    setServerSaving(true);
+    try {
+      const token = await auth.currentUser.getIdToken();
+      const response = await fetch("/.netlify/functions/customer-portal", {
+        method:"POST",
+        headers:{"Content-Type":"application/json", Authorization:`Bearer ${token}`},
+        body:JSON.stringify({target:serverTarget})
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Gagal menyimpan target monitoring.");
+      setDbError("Target monitoring berhasil disimpan.");
+      const statusResponse = await fetch("/.netlify/functions/customer-portal?action=status");
+      const statusResult = await statusResponse.json();
+      if (statusResponse.ok) setServerStatus(statusResult as ServerStatus);
+    } catch (error) {
+      setDbError(error instanceof Error ? error.message : "Gagal menyimpan target monitoring.");
+    } finally {
+      setServerSaving(false);
+    }
+  }
+
   async function seedDemoData() {
     if (!db) { setDbError("Firestore belum dikonfigurasi."); return; }
     if (!customersLoaded || !billsLoaded) { setDbError("Tunggu sampai Firestore selesai memuat data."); return; }
