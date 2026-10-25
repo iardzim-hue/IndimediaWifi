@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
 import type { FormEvent, ChangeEvent } from "react";
+import * as XLSX from "xlsx";
 import { Activity, ArrowDownToLine, ArrowRight, CheckCircle2, CircleHelp, FileSpreadsheet, HardDriveUpload, LockKeyhole, LogOut, RadioTower, Search, ShieldCheck, Signal, Wifi, X, Users, ReceiptText, LayoutDashboard, Settings2 } from "lucide-react";
 
 type LoginType = "customer" | "admin" | null;
 type Customer = { legacyNo: number; name: string; status?: string };
-type Bill = { legacyNo: number; customerName: string; billingMonth: string; amount?: number | null; amountRaw?: string; paymentNote?: string; status?: string };
+type Bill = { legacyNo: number; customerName: string; billingMonth: string; year?: number; amount?: number | null; amountRaw?: string; paymentNote?: string; status?: string };
 type BackupData = { sourceFile?: string; sourceSheet?: string; year?: number; customers: Customer[]; bills: Bill[]; exportedAt?: string };
 
 const demoCustomers: Customer[] = [
@@ -22,14 +23,12 @@ function Brand({ compact = false }: { compact?: boolean }) {
   </a>;
 }
 
-function downloadJson(data: BackupData) {
-  const blob = new Blob([JSON.stringify({ ...data, exportedAt: new Date().toISOString() }, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `indimediawifi-backup-${new Date().toISOString().slice(0, 10)}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
+function downloadExcel(data: BackupData) {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.customers.map(c => ({ No: c.legacyNo, "Nama Pelanggan": c.name, Status: c.status || "active" }))), "Data Pelanggan");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.bills.map(b => ({ "No Pelanggan": b.legacyNo, "Nama Pelanggan": b.customerName, Bulan: b.billingMonth, Tahun: b.year || data.year || 2026, Nominal: b.amount ?? b.amountRaw ?? "", Keterangan: b.paymentNote || "", Status: b.status || "unpaid" }))), "Tagihan Bulanan");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ File: data.sourceFile || "IndimediaWifi", Sheet: data.sourceSheet || "Backup Admin", Tahun: data.year || 2026, "Waktu Backup": new Date().toLocaleString("id-ID") }]), "Info Backup");
+  XLSX.writeFile(wb, "indimediawifi-backup-" + new Date().toISOString().slice(0,10) + ".xlsx");
 }
 
 export default function App() {
@@ -44,6 +43,8 @@ export default function App() {
   const [customers, setCustomers] = useState<Customer[]>(demoCustomers);
   const [bills, setBills] = useState<Bill[]>([]);
   const [backupNotice, setBackupNotice] = useState("");
+  const [billMonth, setBillMonth] = useState("Semua");
+  const [billYear, setBillYear] = useState("2026");
   const fileRef = useRef<HTMLInputElement>(null);
 
   function openLogin(type: LoginType) {
@@ -65,22 +66,23 @@ export default function App() {
   function logout() { setIsAdmin(false); setActiveMenu("dashboard"); }
 
   function handleBackupUpload(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
+    const file = event.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(String(reader.result)) as BackupData;
-        if (!Array.isArray(parsed.customers) || !Array.isArray(parsed.bills)) throw new Error("Format backup harus memiliki customers[] dan bills[].");
-        setCustomers(parsed.customers);
-        setBills(parsed.bills);
-        setBackupNotice(`Backup berhasil dimuat ke tampilan: ${parsed.customers.length} pelanggan dan ${parsed.bills.length} catatan tagihan. Ini belum menyimpan data ke Firestore.`);
-      } catch (error) {
-        setBackupNotice(error instanceof Error ? error.message : "File backup tidak dapat dibaca.");
-      }
+        const wb = XLSX.read(reader.result, { type: "array" });
+        const cs = wb.Sheets["Data Pelanggan"], bs = wb.Sheets["Tagihan Bulanan"];
+        if (!cs || !bs) throw new Error("Workbook harus memiliki sheet Data Pelanggan dan Tagihan Bulanan.");
+        const cr = XLSX.utils.sheet_to_json<Record<string, unknown>>(cs);
+        const br = XLSX.utils.sheet_to_json<Record<string, unknown>>(bs);
+        const nc: Customer[] = cr.map(r => ({ legacyNo:Number(r["No"]), name:String(r["Nama Pelanggan"] || ""), status:String(r["Status"] || "active") })).filter(c => c.name && Number.isFinite(c.legacyNo));
+        const nb: Bill[] = br.map(r => ({ legacyNo:Number(r["No Pelanggan"]), customerName:String(r["Nama Pelanggan"] || ""), billingMonth:String(r["Bulan"] || ""), year:Number(r["Tahun"] || 2026), amount:typeof r["Nominal"]==="number"?r["Nominal"]:null, amountRaw:String(r["Nominal"] ?? ""), paymentNote:String(r["Keterangan"] || ""), status:String(r["Status"] || "unpaid") })).filter(b => Number.isFinite(b.legacyNo) && b.billingMonth);
+        if (!nc.length) throw new Error("Tidak ada data pelanggan valid.");
+        setCustomers(nc); setBills(nb); setBackupNotice("Excel dimuat ke pratinjau: " + nc.length + " pelanggan, " + nb.length + " tagihan. Belum disimpan ke Firestore.");
+      } catch (e) { setBackupNotice(e instanceof Error ? e.message : "File Excel gagal dibaca."); }
       event.target.value = "";
     };
-    reader.readAsText(file);
+    reader.readAsArrayBuffer(file);
   }
 
   const filteredCustomers = customers.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || String(c.legacyNo).includes(search));
@@ -104,14 +106,14 @@ export default function App() {
       {activeMenu === "dashboard" && <div className="admin-content">
         <div className="admin-page-heading"><div><span className="section-kicker">ADMIN CONTROL CENTER</span><h1>Dashboard</h1><p>Ringkasan administrasi pelanggan dan tagihan IndimediaWifi.</p></div><button className="excel-button" onClick={() => { setActiveMenu("backup"); setBackupNotice(""); }}><HardDriveUpload size={16}/> Kelola Backup</button></div>
         <div className="admin-stat-grid"><div className="admin-stat"><span><Users size={17}/> Total Pelanggan</span><strong>{customers.length}</strong><small>Data yang tampil di panel ini</small></div><div className="admin-stat"><span><ReceiptText size={17}/> Catatan Tagihan</span><strong>{bills.length}</strong><small>Data tagihan pada sesi ini</small></div><div className="admin-stat"><span><CheckCircle2 size={17}/> Status Lunas</span><strong>{paidCount}</strong><small>Dari data backup yang dimuat</small></div><div className="admin-stat"><span><Activity size={17}/> Database</span><strong className="pending-text">Belum terhubung</strong><small>Firestore perlu dikonfigurasi</small></div></div>
-        <section className="excel-panel"><div className="excel-panel-heading"><div><FileSpreadsheet size={19}/><span><b>Ringkasan Data Pelanggan</b><small>Pratinjau gaya lembar kerja Excel</small></span></div><button className="excel-button" onClick={() => downloadJson({ sourceFile: "IndimediaWifi", sourceSheet: "Data Pelanggan", year: 2026, customers, bills })}><ArrowDownToLine size={15}/> Download Backup</button></div>
+        <section className="excel-panel"><div className="excel-panel-heading"><div><FileSpreadsheet size={19}/><span><b>Ringkasan Data Pelanggan</b><small>Pratinjau gaya lembar kerja Excel</small></span></div><button className="excel-button" onClick={() => downloadExcel({ sourceFile: "IndimediaWifi", sourceSheet: "Data Pelanggan", year: 2026, customers, bills })}><ArrowDownToLine size={15}/> Download Backup</button></div>
           <div className="excel-table-wrap"><table className="excel-table"><thead><tr><th>No</th><th>Nama Pelanggan</th><th>Status Layanan</th><th>Tagihan Tersimpan</th></tr></thead><tbody>{filteredCustomers.slice(0,8).map(c => <tr key={c.legacyNo}><td>{c.legacyNo}</td><td>{c.name}</td><td><span className={c.status === "off" ? "sheet-status off" : "sheet-status"}>{c.status === "off" ? "OFF" : "Aktif"}</span></td><td>{bills.filter(b=>b.legacyNo===c.legacyNo).length ? bills.filter(b=>b.legacyNo===c.legacyNo).length + " bulan" : "—"}</td></tr>)}</tbody></table></div>
           <p className="admin-hint">Panel ini masih mode pratinjau. Data contoh bukan database live dan belum ditulis ke Firebase.</p>
         </section>
       </div>}
       {activeMenu === "customers" && <div className="admin-content"><div className="admin-page-heading"><div><span className="section-kicker">CUSTOMER MANAGEMENT</span><h1>Data Pelanggan</h1><p>Daftar pelanggan dengan format tabel menyerupai lembar Excel.</p></div><button className="excel-button" onClick={() => downloadJson({sourceSheet:"Data Pelanggan",year:2026,customers,bills})}><ArrowDownToLine size={15}/> Backup</button></div><div className="excel-panel"><div className="table-toolbar"><div className="admin-search"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Cari nomor atau nama pelanggan"/></div><span>{filteredCustomers.length} pelanggan</span></div><div className="excel-table-wrap"><table className="excel-table"><thead><tr><th>No</th><th>Nama Pelanggan</th><th>Status</th><th>ID Legacy</th></tr></thead><tbody>{filteredCustomers.map(c=><tr key={c.legacyNo}><td>{c.legacyNo}</td><td>{c.name}</td><td><span className={c.status==="off"?"sheet-status off":"sheet-status"}>{c.status==="off"?"OFF":"Aktif"}</span></td><td>legacy-{String(c.legacyNo).padStart(3,"0")}</td></tr>)}</tbody></table></div></div></div>}
       {activeMenu === "billing" && <div className="admin-content"><div className="admin-page-heading"><div><span className="section-kicker">BILLING MANAGEMENT</span><h1>Tagihan Bulanan</h1><p>Catatan tagihan per pelanggan dan per bulan.</p></div><button className="excel-button" onClick={() => downloadJson({sourceSheet:"Tagihan Bulanan",year:2026,customers,bills})}><ArrowDownToLine size={15}/> Backup</button></div><div className="excel-panel"><div className="excel-table-wrap"><table className="excel-table"><thead><tr><th>No Pelanggan</th><th>Nama Pelanggan</th><th>Bulan</th><th>Nominal</th><th>Keterangan</th><th>Status</th></tr></thead><tbody>{bills.slice(0,100).map((b,i)=><tr key={i}><td>{b.legacyNo}</td><td>{b.customerName}</td><td>{b.billingMonth}</td><td>{b.amount == null ? (b.amountRaw || "—") : new Intl.NumberFormat("id-ID",{style:"currency",currency:"IDR",maximumFractionDigits:0}).format(b.amount)}</td><td>{b.paymentNote || "—"}</td><td><span className={b.status==="paid"?"sheet-status":"sheet-status off"}>{b.status || "Belum ada status"}</span></td></tr>)}</tbody></table>{bills.length===0 && <div className="empty-sheet">Belum ada data tagihan di sesi ini. Muat backup JSON untuk melihat catatan.</div>}</div></div></div>}
-      {activeMenu === "backup" && <div className="admin-content"><div className="admin-page-heading"><div><span className="section-kicker">DATA SAFETY</span><h1>Backup & Restore</h1><p>Simpan salinan data atau muat kembali file backup JSON.</p></div></div><div className="backup-grid"><section className="backup-card"><div className="backup-icon"><ArrowDownToLine size={22}/></div><h3>Download Backup</h3><p>Unduh salinan data pelanggan dan tagihan yang saat ini tersedia di panel.</p><div className="backup-counts"><span>{customers.length} pelanggan</span><span>{bills.length} tagihan</span></div><button className="button-primary" onClick={()=>downloadJson({sourceFile:"IndimediaWifi",sourceSheet:"Backup Admin",year:2026,customers,bills})}><ArrowDownToLine size={16}/> Download file backup</button></section><section className="backup-card"><div className="backup-icon upload"><HardDriveUpload size={22}/></div><h3>Upload / Restore Backup</h3><p>Pilih file backup JSON IndimediaWifi. File akan diperiksa sebelum dimuat ke tampilan.</p><div className="backup-file-note">Format: <b>.json</b> · harus berisi <code>customers[]</code> dan <code>bills[]</code></div><input ref={fileRef} className="hidden-file-input" type="file" accept=".json,application/json" onChange={handleBackupUpload}/><button className="button-primary" onClick={()=>fileRef.current?.click()}><HardDriveUpload size={16}/> Pilih file backup</button></section></div>{backupNotice && <div className="backup-result" role="status">{backupNotice}</div>}<div className="backup-warning"><LockKeyhole size={18}/><div><b>Catatan penting</b><p>Saat ini download dan upload bekerja pada data sesi pratinjau di browser. Restore belum menulis ke Firestore. Setelah konfigurasi Firebase dan aturan akses aman aktif, fungsi ini perlu dihubungkan ke database utama.</p></div></div></div>}
+      {activeMenu === "backup" && <div className="admin-content"><div className="admin-page-heading"><div><span className="section-kicker">DATA SAFETY</span><h1>Backup & Restore</h1><p>Simpan salinan data atau muat kembali file backup Excel.</p></div></div><div className="backup-grid"><section className="backup-card"><div className="backup-icon"><ArrowDownToLine size={22}/></div><h3>Download Backup</h3><p>Unduh salinan data pelanggan dan tagihan yang saat ini tersedia di panel.</p><div className="backup-counts"><span>{customers.length} pelanggan</span><span>{bills.length} tagihan</span></div><button className="button-primary" onClick={()=>downloadJson({sourceFile:"IndimediaWifi",sourceSheet:"Backup Admin",year:2026,customers,bills})}><ArrowDownToLine size={16}/> Download file backup</button></section><section className="backup-card"><div className="backup-icon upload"><HardDriveUpload size={22}/></div><h3>Upload / Restore Backup</h3><p>Pilih file backup JSON IndimediaWifi. File akan diperiksa sebelum dimuat ke tampilan.</p><div className="backup-file-note">Format: <b>.xlsx / .xls</b> · sheet Data Pelanggan dan Tagihan Bulanan</div><input ref={fileRef} className="hidden-file-input" type="file" accept=".xlsx,.xls" onChange={handleBackupUpload}/><button className="button-primary" onClick={()=>fileRef.current?.click()}><HardDriveUpload size={16}/> Pilih file backup</button></section></div>{backupNotice && <div className="backup-result" role="status">{backupNotice}</div>}<div className="backup-warning"><LockKeyhole size={18}/><div><b>Catatan penting</b><p>Saat ini download dan upload bekerja pada data sesi pratinjau di browser. Restore belum menulis ke Firestore. Setelah konfigurasi Firebase dan aturan akses aman aktif, fungsi ini perlu dihubungkan ke database utama.</p></div></div></div>}
       {activeMenu === "settings" && <div className="admin-content"><div className="admin-page-heading"><div><span className="section-kicker">SYSTEM CONFIGURATION</span><h1>Pengaturan</h1><p>Informasi sistem dan status koneksi database.</p></div></div><div className="excel-panel settings-panel"><div><span>Nama usaha</span><b>Indimedia Wifi</b></div><div><span>Slogan</span><b>Internet murah untuk semua</b></div><div><span>Sumber data</span><b>Mode pratinjau lokal</b></div><div><span>Firestore</span><b className="pending-text">Belum dikonfigurasi / belum diuji</b></div><div><span>Login admin</span><b>Demo lokal — bukan autentikasi produksi</b></div></div></div>}
     </section>
   </main>;
