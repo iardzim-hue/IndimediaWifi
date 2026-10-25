@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { ArrowRight, CheckCircle2, CircleHelp, LockKeyhole, RadioTower, ShieldCheck, Signal, Wifi, X } from "lucide-react";
+import { Activity, ArrowRight, CheckCircle2, CircleHelp, LockKeyhole, RadioTower, ShieldCheck, Signal, Wifi, X } from "lucide-react";
 
 type LoginType = "customer" | "admin" | null;
 
