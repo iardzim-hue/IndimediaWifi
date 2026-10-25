@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Activity, ArrowRight, CheckCircle2, CircleHelp, LockKeyhole, RadioTower, ShieldCheck, Signal, Wifi, X } from "lucide-react";
+import type { FormEvent } from "react";
+import { ArrowRight, CheckCircle2, CircleHelp, LockKeyhole, RadioTower, ShieldCheck, Signal, Wifi, X } from "lucide-react";
 
 type LoginType = "customer" | "admin" | null;
 
@@ -22,7 +23,7 @@ export default function App() {
     setNotice("");
   }
 
-  function submitLogin(event: React.FormEvent<HTMLFormElement>) {
+  function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setNotice(loginType === "customer"
       ? "Form sudah siap. Verifikasi ID dan tampilan tagihan akan diaktifkan setelah autentikasi pelanggan terhubung ke Firebase."
