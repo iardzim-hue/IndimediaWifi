@@ -68,7 +68,7 @@ export async function handler(event) {
       const billsSnap = await db.collection("bills").where("legacyNo", "==", legacyNo).get();
       const bills = billsSnap.docs.map(d => {
         const b = d.data();
-        const amount = Number(b.amount ?? b.amountRaw ?? 0) || 0;
+        const rawAmount = b.amount ?? b.amountRaw ?? 0;\n        const amount = typeof rawAmount === "number" ? rawAmount : (Number(String(rawAmount).replace(/[^0-9-]/g, "")) || 0);
         const discount = Math.max(0, Number(b.discount) || 0);
         return {
           id: d.id,
@@ -105,7 +105,7 @@ export async function handler(event) {
     if (!token) return reply(401, { error: "Token admin wajib disertakan." });
     const { getAuth } = await import("firebase-admin/auth");
     const decoded = await getAuth().verifyIdToken(token);
-    if (!decoded.email || !decoded.email_verified && !decoded.firebase?.sign_in_provider) {
+    if (!decoded.email || decoded.firebase?.sign_in_provider !== "password") {
       return reply(403, { error: "Akun admin tidak valid." });
     }
     const body = JSON.parse(event.body || "{}");
