@@ -367,6 +367,11 @@ export default function App() {
         if (editor.kind==="customer") {
           const row:Customer={legacyNo:Number(d.legacyNo),name:d.name.trim(),customerId:String(d.customerId||"").trim(),phone:d.phone,address:d.address,packageName:d.packageName,basePrice:Math.max(0,Number(d.basePrice)||0),dueDay:Math.min(28,Math.max(1,Number(d.dueDay)||10)),status:d.status};
           if(!row.name)return;
+          const normalizedId = (row.customerId || "").trim().toLocaleLowerCase("id-ID");
+          if (normalizedId && customers.some(c => c.legacyNo !== row.legacyNo && String(c.customerId || "").trim().toLocaleLowerCase("id-ID") === normalizedId)) {
+            setDbError("ID login sudah dipakai pelanggan lain. Gunakan ID yang berbeda.");
+            return;
+          }
           await setDoc(doc(db,"customers",String(row.legacyNo)),{...row,updatedAt:serverTimestamp()},{merge:true});
         } else {
           const customer=customers.find(x=>x.legacyNo===Number(d.legacyNo));if(!customer)return;
