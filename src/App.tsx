@@ -123,22 +123,128 @@ export default function App() {
   }
 
   function handleBackupUpload(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]; if (!file) return;
+    const file = event.target.files?.[0];
+    if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
-        const wb = XLSX.read(reader.result, { type: "array" });
-        const cs = wb.Sheets["Data Pelanggan"], bs = wb.Sheets["Tagihan Bulanan"];
-        if (!cs || !bs) throw new Error("Workbook harus memiliki sheet Data Pelanggan dan Tagihan Bulanan.");
-        const cr = XLSX.utils.sheet_to_json<Record<string, unknown>>(cs);
-        const br = XLSX.utils.sheet_to_json<Record<string, unknown>>(bs);
-        const nc: Customer[] = cr.map(r => ({ legacyNo:Number(r["No"]), name:String(r["Nama Pelanggan"] || ""), status:String(r["Status"] || "active"), phone:String(r["Nomor HP"] || ""), address:String(r["Alamat"] || ""), packageName:String(r["Paket"] || ""), basePrice:Number(r["Harga Dasar"] || 0), dueDay:Number(r["Jatuh Tempo"] || 10) })).filter(c => c.name && Number.isFinite(c.legacyNo));
-        const nb: Bill[] = br.map(r => ({ legacyNo:Number(r["No Pelanggan"]), customerName:String(r["Nama Pelanggan"] || ""), billingMonth:String(r["Bulan"] || ""), year:Number(r["Tahun"] || 2026), amount:typeof r["Nominal"]==="number"?r["Nominal"]:null, amountRaw:String(r["Nominal"] ?? ""), discount:Number(r["Diskon"] || 0), paidAt:String(r["Tanggal Bayar"] || ""), paymentNote:String(r["Keterangan"] || ""), status:String(r["Status"] || "unpaid") })).filter(b => Number.isFinite(b.legacyNo) && b.billingMonth);
-        if (!nc.length) throw new Error("Tidak ada data pelanggan valid.");
-        if (!db) throw new Error("Firestore belum dikonfigurasi.");
-         void (async()=>{try{const batch=writeBatch(db!);nc.forEach(customer=>batch.set(doc(db!,"customers",String(customer.legacyNo)),{...customer,updatedAt:serverTimestamp()},{merge:true}));nb.forEach((bill,i)=>{const id=bill.id||("restore-"+bill.legacyNo+"-"+bill.year+"-"+bill.billingMonth+"-"+i);batch.set(doc(db!,"bills",id),{...bill,id,updatedAt:serverTimestamp()},{merge:true});});await batch.commit();setBackupNotice("Restore berhasil disimpan ke Firestore: "+nc.length+" pelanggan, "+nb.length+" tagihan.");}catch(error){setBackupNotice("Restore gagal: "+(error instanceof Error?error.message:"Firestore error"));}})();
-      } catch (e) { setBackupNotice(e instanceof Error ? e.message : "File Excel gagal dibaca."); }
-      event.target.value = "";
+        const wb = XLSX.read(reader.result, { type: "array", cellDates: true });
+        let nc: Customer[] = [];
+        let nb: Bill[] = [];
+        let sourceSheet = "";
+        let sourceYear = 2026;
+        const customerSheet = wb.Sheets["Data Pelanggan"];
+        const billSheet = wb.Sheets["Tagihan Bulanan"];
+
+        if (customerSheet && billSheet) {
+          sourceSheet = "Data Pelanggan + Tagihan Bulanan";
+          const cr = XLSX.utils.sheet_to_json<Record<string, unknown>>(customerSheet, { defval: "" });
+          const br = XLSX.utils.sheet_to_json<Record<string, unknown>>(billSheet, { defval: "" });
+          nc = cr.map(r => ({
+            legacyNo: Number(r["No"]), name: String(r["Nama Pelanggan"] || "").trim(),
+            status: ["off","OFF","nonaktif","Nonaktif"].includes(String(r["Status"] || "")) ? "off" : "active",
+            phone: String(r["Nomor HP"] || ""), address: String(r["Alamat"] || ""),
+            packageName: String(r["Paket"] || ""), basePrice: Number(r["Harga Dasar"] || 0),
+            dueDay: Number(r["Jatuh Tempo"] || 10)
+          })).filter(x => x.name && Number.isFinite(x.legacyNo));
+          nb = br.map((r, i) => {
+            const raw = r["Nominal"];
+            const rawText = String(raw ?? "").trim();
+            const amount = typeof raw === "number" ? raw : (/^\d+(?:\.\d+)?$/.test(rawText) ? Number(rawText) : null);
+            const month = String(r["Bulan"] || "").trim();
+            const year = Number(r["Tahun"] || 2026);
+            return {
+              legacyNo: Number(r["No Pelanggan"]), customerName: String(r["Nama Pelanggan"] || "").trim(),
+              billingMonth: month, year, amount, amountRaw: amount == null ? rawText : "",
+              discount: Number(r["Diskon"] || 0), paidAt: String(r["Tanggal Bayar"] || ""),
+              paymentNote: String(r["Keterangan"] || ""),
+              status: ["paid","lunas","Lunas","PAID"].includes(String(r["Status"] || "")) ? "paid" : "unpaid",
+              sourceSheet, sourceRow: i + 2
+            } as Bill;
+          }).filter(x => Number.isFinite(x.legacyNo) && x.billingMonth);
+          sourceYear = Number(br[0]?.["Tahun"] || 2026);
+        } else {
+          const sourceName = wb.SheetNames.find(name => /^CAT WIFI(?:\s+\d{4})?$/i.test(name.trim()));
+          if (!sourceName) throw new Error("Format file tidak dikenal. Gunakan backup IndimediaWifi atau sheet CAT WIFI 2026.");
+          sourceSheet = sourceName;
+          const rows = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[sourceName], { header: 1, raw: true, defval: null }) as unknown[][];
+          const header = rows[0] || [];
+          const months = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+          const monthColumns: Array<{ col: number; month: string; year: number }> = [];
+          header.forEach((value, col) => {
+            if (col < 2 || col > 25 || value == null) return;
+            let date: Date | null = value instanceof Date ? value : null;
+            if (!date && typeof value === "number") {
+              const d = XLSX.SSF.parse_date_code(value);
+              if (d) date = new Date(d.y, d.m - 1, d.d || 1);
+            }
+            if (!date && typeof value === "string") {
+              const d = new Date(value);
+              if (!Number.isNaN(d.getTime())) date = d;
+            }
+            if (date && !Number.isNaN(date.getTime())) {
+              monthColumns.push({ col, month: months[date.getMonth()], year: date.getFullYear() });
+              sourceYear = date.getFullYear();
+            }
+          });
+          rows.slice(1).forEach((row, index) => {
+            const legacyNo = Number(row[0]);
+            const name = String(row[1] ?? "").trim();
+            if (!name || !Number.isFinite(legacyNo) || /^total$/i.test(name)) return;
+            let status = "active";
+            let basePrice = 0;
+            monthColumns.forEach(({ col, month, year }) => {
+              const raw = row[col];
+              const noteRaw = row[col + 1];
+              const note = noteRaw instanceof Date
+                ? `${String(noteRaw.getDate()).padStart(2,"0")}/${String(noteRaw.getMonth()+1).padStart(2,"0")}/${String(noteRaw.getFullYear()).slice(-2)}`
+                : String(noteRaw ?? "").trim();
+              if (typeof raw === "string" && /^OFF$/i.test(raw.trim())) { status = "off"; return; }
+              if (raw == null || raw === "") return;
+              let amount: number | null = null;
+              let amountRaw = "";
+              if (typeof raw === "number" && Number.isFinite(raw)) amount = raw;
+              else {
+                const txt = String(raw).trim().replace(/\s/g, "");
+                if (/^\d+(?:\.\d+)?(?:\+\d+(?:\.\d+)?)+$/.test(txt)) {
+                  amount = txt.split("+").reduce((sum, part) => sum + Number(part), 0);
+                  amountRaw = String(raw).trim();
+                } else amountRaw = String(raw).trim();
+              }
+              if (amount != null && amount > 0) basePrice = amount;
+              if ((amount == null || amount <= 0) && !amountRaw) return;
+              nb.push({
+                legacyNo, customerName: name, billingMonth: month, year, amount, amountRaw,
+                paymentNote: note, status: note ? "paid" : "unpaid", sourceSheet, sourceRow: index + 2
+              } as Bill);
+            });
+            nc.push({ legacyNo, name, status, basePrice });
+          });
+        }
+
+        if (!nc.length) throw new Error("Tidak ditemukan data pelanggan valid pada file ini.");
+        if (!db || !auth?.currentUser) throw new Error("Login admin Firebase diperlukan sebelum restore.");
+        const batch = writeBatch(db);
+        nc.forEach(customer => batch.set(doc(db!, "customers", String(customer.legacyNo)), {
+          ...customer, sourceFile: file.name, sourceSheet, updatedAt: serverTimestamp()
+        }, { merge: true }));
+        nb.forEach(bill => {
+          const months = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+          const monthNumber = /^\d{4}-\d{2}$/.test(bill.billingMonth) ? bill.billingMonth.slice(5,7) :
+            String(months.indexOf(bill.billingMonth) + 1).padStart(2,"0");
+          const id = `import-${bill.legacyNo}-${bill.year || sourceYear}-${monthNumber}`;
+          batch.set(doc(db!, "bills", id), {
+            ...bill, id, year: bill.year || sourceYear, sourceFile: file.name,
+            sourceSheet, updatedAt: serverTimestamp()
+          }, { merge: true });
+        });
+        await batch.commit();
+        setBackupNotice(`Restore berhasil: ${nc.length} pelanggan dan ${nb.length} tagihan dari "${sourceSheet}" tersimpan ke Firestore.`);
+      } catch (error) {
+        setBackupNotice(error instanceof Error ? error.message : "File Excel gagal dibaca.");
+      } finally {
+        event.target.value = "";
+      }
     };
     reader.readAsArrayBuffer(file);
   }
@@ -172,7 +278,7 @@ export default function App() {
       </div>}
       {activeMenu === "customers" && <div className="admin-content"><div className="admin-page-heading"><div><span className="section-kicker">CUSTOMER MANAGEMENT</span><h1>Data Pelanggan</h1><p>Daftar pelanggan dengan format tabel menyerupai lembar Excel.</p></div><div className="action-group"><button className="excel-button" onClick={() => {const legacyNo=Math.max(0,...customers.map(c=>c.legacyNo))+1;setEditor({kind:"customer",data:{legacyNo:String(legacyNo),name:"",phone:"",address:"",packageName:"Reguler",basePrice:"100000",dueDay:"10",status:"active"}});}}><Users size={15}/> Tambah Pelanggan</button><button className="excel-button" onClick={() => downloadExcel({sourceSheet:"Data Pelanggan",year:2026,customers,bills})}><ArrowDownToLine size={15}/> Backup Excel</button></div></div><div className="excel-panel"><div className="table-toolbar"><div className="admin-search"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Cari nomor atau nama pelanggan"/></div><span>{filteredCustomers.length} pelanggan</span></div><div className="excel-table-wrap"><table className="excel-table"><thead><tr><th>No</th><th>Nama Pelanggan</th><th>Status</th><th>ID Legacy</th><th>Aksi</th></tr></thead><tbody>{filteredCustomers.map(c=><tr key={c.legacyNo}><td>{c.legacyNo}</td><td>{c.name}</td><td><span className={c.status==="off"?"sheet-status off":"sheet-status"}>{c.status==="off"?"OFF":"Aktif"}</span></td><td>legacy-{String(c.legacyNo).padStart(3,"0")}</td><td><button className="row-action" onClick={()=>setEditor({kind:"customer",index:c.legacyNo,data:{legacyNo:String(c.legacyNo),name:c.name,phone:c.phone||"",address:c.address||"",packageName:c.packageName||"Reguler",basePrice:String(c.basePrice??100000),dueDay:String(c.dueDay??10),status:c.status||"active"}})}>Edit</button><button className="row-action danger" onClick={()=>{if(window.confirm("Hapus pelanggan "+c.name+"?")){void (async()=>{if(!db)return;try{await deleteDoc(doc(db,"customers",String(c.legacyNo)));const batch=writeBatch(db);bills.filter(b=>b.legacyNo===c.legacyNo).forEach(b=>{if(b.id)batch.delete(doc(db!,"bills",b.id));});await batch.commit();}catch(error){setDbError(error instanceof Error?error.message:"Gagal menghapus pelanggan.");}})();}}}>Hapus</button></td></tr>)}</tbody></table></div></div></div>}
       {activeMenu === "billing" && <div className="admin-content"><div className="admin-page-heading"><div><span className="section-kicker">BILLING MANAGEMENT</span><h1>Tagihan Bulanan</h1><p>Catatan tagihan per pelanggan dan per bulan.</p></div><div className="action-group"><button className="excel-button" onClick={() => {const customer=customers[0];if(!customer){setNotice("Tambahkan pelanggan terlebih dahulu.");return;}setEditor({kind:"bill",data:{legacyNo:String(customer.legacyNo),customerName:customer.name,billingMonth:"Oktober",year:"2026",amount:String(customer.basePrice??100000),discount:"0",paidAt:"",paymentNote:"",status:"unpaid"}});}}><ReceiptText size={15}/> Tambah Tagihan</button><button className="excel-button" onClick={() => downloadExcel({sourceSheet:"Tagihan Bulanan",year:2026,customers,bills})}><ArrowDownToLine size={15}/> Backup Excel</button></div></div><div className="excel-panel"><div className="table-toolbar"><label>Bulan <select value={billMonth} onChange={e=>setBillMonth(e.target.value)}><option>Semua</option>{["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"].map(m=><option key={m}>{m}</option>)}</select></label><label>Tahun <input className="year-filter" type="number" value={billYear} onChange={e=>setBillYear(e.target.value)}/></label></div><div className="excel-table-wrap"><table className="excel-table"><thead><tr><th>No Pelanggan</th><th>Nama Pelanggan</th><th>Bulan</th><th>Tahun</th><th>Nominal</th><th>Keterangan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{bills.filter(b=>(billMonth==="Semua"||b.billingMonth===billMonth)&&String(b.year||2026)===billYear).slice(0,100).map((b,i)=><tr key={i}><td>{b.legacyNo}</td><td>{b.customerName}</td><td>{b.billingMonth}</td><td>{b.year||2026}</td><td>{b.amount == null ? (b.amountRaw || "—") : new Intl.NumberFormat("id-ID",{style:"currency",currency:"IDR",maximumFractionDigits:0}).format(b.amount)}</td><td>{b.paymentNote || "—"}</td><td><span className={b.status==="paid"?"sheet-status":"sheet-status off"}>{b.status || "Belum ada status"}</span></td><td><button className="row-action" onClick={()=>setEditor({kind:"bill",index:bills.indexOf(b),data:{legacyNo:String(b.legacyNo),customerName:b.customerName,billingMonth:b.billingMonth,year:String(b.year||2026),amount:String(b.amount??b.amountRaw??""),discount:String(b.discount??0),paidAt:b.paidAt||"",paymentNote:b.paymentNote||"",status:b.status||"unpaid"}})}>Edit</button><button className="row-action danger" onClick={()=>{if(window.confirm("Hapus catatan tagihan ini?"))void (async()=>{if(!db||!b.id)return;try{await deleteDoc(doc(db,"bills",b.id));}catch(error){setDbError(error instanceof Error?error.message:"Gagal menghapus tagihan.");}})();}}>Hapus</button></td></tr>)}</tbody></table>{bills.length===0 && <div className="empty-sheet">Belum ada data tagihan di sesi ini. Muat backup JSON untuk melihat catatan.</div>}</div></div></div>}
-      {activeMenu === "backup" && <div className="admin-content"><div className="admin-page-heading"><div><span className="section-kicker">DATA SAFETY</span><h1>Backup & Restore</h1><p>Simpan salinan data atau muat kembali file backup Excel.</p></div></div><div className="backup-grid"><section className="backup-card"><div className="backup-icon"><ArrowDownToLine size={22}/></div><h3>Download Backup</h3><p>Unduh salinan data pelanggan dan tagihan yang saat ini tersedia di panel.</p><div className="backup-counts"><span>{customers.length} pelanggan</span><span>{bills.length} tagihan</span></div><button className="button-primary" onClick={()=>downloadExcel({sourceFile:"IndimediaWifi",sourceSheet:"Backup Admin",year:2026,customers,bills})}><ArrowDownToLine size={16}/> Download file backup</button></section><section className="backup-card"><div className="backup-icon upload"><HardDriveUpload size={22}/></div><h3>Upload / Restore Backup</h3><p>Pilih file backup JSON IndimediaWifi. File akan diperiksa sebelum dimuat ke tampilan.</p><div className="backup-file-note">Format: <b>.xlsx / .xls</b> · sheet Data Pelanggan dan Tagihan Bulanan</div><input ref={fileRef} className="hidden-file-input" type="file" accept=".xlsx,.xls" onChange={handleBackupUpload}/><button className="button-primary" onClick={()=>fileRef.current?.click()}><HardDriveUpload size={16}/> Pilih file backup</button></section></div>{backupNotice && <div className="backup-result" role="status">{backupNotice}</div>}<div className="backup-warning"><LockKeyhole size={18}/><div><b>Catatan penting</b><p>Saat ini download dan upload bekerja pada data sesi pratinjau di browser. Restore belum menulis ke Firestore. Setelah konfigurasi Firebase dan aturan akses aman aktif, fungsi ini perlu dihubungkan ke database utama.</p></div></div></div>}
+      {activeMenu === "backup" && <div className="admin-content"><div className="admin-page-heading"><div><span className="section-kicker">DATA SAFETY</span><h1>Backup & Restore</h1><p>Simpan salinan data atau muat kembali file backup Excel.</p></div></div><div className="backup-grid"><section className="backup-card"><div className="backup-icon"><ArrowDownToLine size={22}/></div><h3>Download Backup</h3><p>Unduh salinan data pelanggan dan tagihan yang saat ini tersedia di panel.</p><div className="backup-counts"><span>{customers.length} pelanggan</span><span>{bills.length} tagihan</span></div><button className="button-primary" onClick={()=>downloadExcel({sourceFile:"IndimediaWifi",sourceSheet:"Backup Admin",year:2026,customers,bills})}><ArrowDownToLine size={16}/> Download file backup</button></section><section className="backup-card"><div className="backup-icon upload"><HardDriveUpload size={22}/></div><h3>Upload / Restore Backup</h3><p>Pilih backup IndimediaWifi atau file sumber Catatan Indi Media WiFi.xlsx (sheet CAT WIFI 2026). Data akan divalidasi sebelum disimpan ke Firestore.</p><div className="backup-file-note">Format: <b>.xlsx / .xls</b> · sheet Data Pelanggan dan Tagihan Bulanan</div><input ref={fileRef} className="hidden-file-input" type="file" accept=".xlsx,.xls" onChange={handleBackupUpload}/><button className="button-primary" onClick={()=>fileRef.current?.click()}><HardDriveUpload size={16}/> Pilih file backup</button></section></div>{backupNotice && <div className="backup-result" role="status">{backupNotice}</div>}<div className="backup-warning"><LockKeyhole size={18}/><div><b>Catatan penting</b><p>Restore akan menulis data yang lolos validasi ke Firestore. File CAT WIFI 2026 dipetakan menjadi pelanggan dan tagihan per bulan. Unduh backup terlebih dahulu sebelum restore agar ada salinan data saat ini.</p></div></div></div>}
       {activeMenu === "settings" && <div className="admin-content"><div className="admin-page-heading"><div><span className="section-kicker">SYSTEM CONFIGURATION</span><h1>Pengaturan</h1><p>Informasi sistem dan status koneksi database.</p></div></div><div className="excel-panel settings-panel"><div><span>Nama usaha</span><b>Indimedia Wifi</b></div><div><span>Slogan</span><b>Internet murah untuk semua</b></div><div><span>Sumber data</span><b>Cloud Firestore</b></div><div><span>Firestore</span><b className={dbStatus==="Terhubung"?"":"pending-text"}>{dbStatus}</b></div><div><span>Login admin</span><b>Firebase Authentication</b></div></div></div>}
     </section>
 
