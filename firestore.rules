@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Admin accounts must be created explicitly in Firebase Authentication.
+    // No public sign-up flow is provided by this app.
+    function isSignedInAdmin() {
+      return request.auth != null
+        && request.auth.token.firebase.sign_in_provider == 'password'
+        && request.auth.token.email != null;
+    }
+
+    match /customers/{customerId} {
+      allow read, create, update, delete: if isSignedInAdmin();
+    }
+
+    match /bills/{billId} {
+      allow read, create, update, delete: if isSignedInAdmin();
+    }
+  }
+}
