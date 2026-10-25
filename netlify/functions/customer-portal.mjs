@@ -68,7 +68,8 @@ export async function handler(event) {
       const billsSnap = await db.collection("bills").where("legacyNo", "==", legacyNo).get();
       const bills = billsSnap.docs.map(d => {
         const b = d.data();
-        const rawAmount = b.amount ?? b.amountRaw ?? 0;\n        const amount = typeof rawAmount === "number" ? rawAmount : (Number(String(rawAmount).replace(/[^0-9-]/g, "")) || 0);
+        const rawAmount = b.amount ?? b.amountRaw ?? 0;
+        const amount = typeof rawAmount === "number" ? rawAmount : (Number(String(rawAmount).replace(/[^0-9-]/g, "")) || 0);
         const discount = Math.max(0, Number(b.discount) || 0);
         return {
           id: d.id,
