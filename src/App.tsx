@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ChangeEvent } from "react";
 import * as XLSX from "xlsx";
-import { signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { collection, onSnapshot, doc, setDoc, deleteDoc, writeBatch, serverTimestamp } from "firebase/firestore";
 import { auth, db, hasFirebaseConfig } from "./firebase";
 import { Activity, ArrowDownToLine, ArrowRight, CheckCircle2, CircleHelp, FileSpreadsheet, HardDriveUpload, LockKeyhole, LogOut, RadioTower, Search, ShieldCheck, Signal, Wifi, X, Users, ReceiptText, LayoutDashboard, Settings2 } from "lucide-react";
@@ -76,6 +76,15 @@ export default function App() {
   async function logout() {
     try { if (auth) await signOut(auth); } finally { setIsAdmin(false); setActiveMenu("dashboard"); setCustomers([]); setBills([]); setDbStatus("Belum login"); }
   }
+
+  useEffect(() => {
+    if (!auth) return;
+    const unsubscribe = onAuthStateChanged(auth, user => {
+      setIsAdmin(Boolean(user));
+      setDbStatus(user ? "Terhubung" : "Belum login");
+    });
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     if (!isAdmin || !db || !auth?.currentUser) return;
