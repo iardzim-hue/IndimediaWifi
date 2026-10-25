@@ -42,3 +42,5 @@
 .admin-edit-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:22px;padding-top:16px;border-top:1px solid #e8eef2}
 .admin-edit-actions button{min-height:40px}
 @media(max-width:560px){.admin-edit-grid{grid-template-columns:1fr}.admin-edit-modal{padding:24px 18px}.admin-edit-actions{flex-direction:column-reverse}.admin-edit-actions button{width:100%}}
+
+.server-check-panel{margin-bottom:18px}.server-check-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}.server-check-grid>div{border:1px solid #e4edf2;border-radius:8px;padding:13px;display:flex;flex-direction:column;gap:7px}.server-check-grid span{font-size:11px;color:#718597}.server-check-grid b{font-size:13px;color:#36556a}@media(max-width:650px){.server-check-grid{grid-template-columns:1fr}}
